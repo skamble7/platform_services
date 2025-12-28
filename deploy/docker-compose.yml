@@ -6,6 +6,14 @@ services:
       - "5672:5672"
       - "15672:15672"
 
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
   workspace-service:
     build:
       context: ..
@@ -15,6 +23,7 @@ services:
       - ../services/workspace-service/.env.example
     depends_on:
       - rabbitmq
+      - mongodb
     ports:
       - "8010:8010"
 
@@ -49,7 +58,6 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin_password
 
-      # Browser-friendly hostname for dev
       KC_HOSTNAME: localhost
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
@@ -71,6 +79,20 @@ services:
     depends_on:
       - keycloak
 
+  sentinel-service:
+    build:
+      context: ..
+      dockerfile: services/sentinel-service/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../services/sentinel-service/.env.example
+    ports:
+      - "8030:8030"
+    depends_on:
+      - mongodb
+
 volumes:
   postgres_data:
     name: keycloak_postgres_data
+  mongo_data:
+    name: sentinel_mongo_data
