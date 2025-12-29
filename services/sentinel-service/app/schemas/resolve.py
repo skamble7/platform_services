@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Literal
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel
 
 
 class ResolveResource(BaseModel):
@@ -32,6 +32,11 @@ class PermissionGrant(BaseModel):
     key: str                     # e.g. "workspace.read"
     action: str                  # e.g. "read"
     resource_type: str           # e.g. "workspace"
+
+    # NEW: optional owner/namespace of the permission itself
+    app: Optional[str] = None
+
+    # Request/session context binding (not the same as app)
     platform: Optional[str] = None
     resource_id: Optional[str] = None
 
@@ -40,13 +45,13 @@ class ResolveRequest(BaseModel):
     issuer: str
     subject: str
 
-    # ✅ platform is optional so Passport can resolve at login before app context exists
+    # platform is optional so Passport can resolve at login before app context exists
     platform: Optional[str] = None
 
-    # ✅ legacy convenience (works even if platform is known but resource isn't)
+    # legacy convenience (works even if platform is known but resource isn't)
     workspace_id: Optional[str] = None
 
-    # ✅ new optional context (preferred path going forward)
+    # new optional context (preferred path going forward)
     context: Optional[ResolveContext] = None
 
 
@@ -60,7 +65,7 @@ class ResolveResponse(BaseModel):
 
     roles: List[str] = []
 
-    # ✅ structured permissions (no more loose strings)
+    # structured permissions (no more loose strings)
     permissions: List[PermissionGrant] = []
 
     policies_applied: List[str] = []

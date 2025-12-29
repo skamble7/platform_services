@@ -12,7 +12,11 @@ async def create_permission(request: Request, payload: dict):
     if not key:
         raise HTTPException(400, "Missing key")
     try:
-        return await dal.create(key=key, description=payload.get("description"))
+        return await dal.create(
+            key=key,
+            description=payload.get("description"),
+            app=payload.get("app"),
+        )
     except ValueError as e:
         raise HTTPException(409, str(e))
 

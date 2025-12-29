@@ -82,8 +82,6 @@ class Resolver:
         policy_roles_allow: Set[str] = set()
         policy_roles_deny: Set[str] = set()
 
-        # If no platform context yet, we only apply "global" policies (target.platform == None)
-        # Otherwise apply platform-scoped policies (+ optional workspace scoping)
         policies = await self.policy_dal.find_applicable(
             platform=platform_eff,
             workspace_id=workspace_eff,
@@ -138,14 +136,17 @@ class Resolver:
         permissions_out: List[Dict[str, Any]] = []
         for key in sorted(permission_keys):
             doc = perm_docs.get(key) or {}
+            resource_type_doc = doc.get("resource_type") or (key.split(".", 1)[0] if "." in key else "global")
+
             permissions_out.append(
                 {
                     "key": key,
                     "action": doc.get("action") or (key.split(".", 1)[1] if "." in key else key),
-                    "resource_type": doc.get("resource_type") or (key.split(".", 1)[0] if "." in key else "global"),
+                    "resource_type": resource_type_doc,
+                    "app": doc.get("app"),
                     "platform": platform_eff,
                     # For now, only auto-bind workspace_id when permission resource_type is "workspace"
-                    "resource_id": (workspace_eff if (doc.get("resource_type") == "workspace") else None),
+                    "resource_id": (workspace_eff if (resource_type_doc == "workspace") else None),
                 }
             )
 

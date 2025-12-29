@@ -34,14 +34,20 @@ class PermissionDAL:
 
     async def ensure_indexes(self) -> None:
         await self.col.create_index([("key", ASCENDING)], unique=True)
+
+        # Helpful query patterns:
+        # - list/search by app + resource_type + action
+        # - list/search by resource_type + action across apps
+        await self.col.create_index([("app", ASCENDING), ("resource_type", ASCENDING), ("action", ASCENDING)])
         await self.col.create_index([("resource_type", ASCENDING), ("action", ASCENDING)])
 
-    async def create(self, *, key: str, description: Optional[str]) -> Dict[str, Any]:
+    async def create(self, *, key: str, description: Optional[str], app: Optional[str] = None) -> Dict[str, Any]:
         resource_type, action = _derive_resource_action(key)
         doc = {
             "key": key,
             "resource_type": resource_type,
             "action": action,
+            "app": (app.strip() if isinstance(app, str) and app.strip() else None),
             "description": description,
             "created_at": _now(),
             "updated_at": _now(),
@@ -55,6 +61,7 @@ class PermissionDAL:
 
     async def get(self, id: str) -> Optional[Dict[str, Any]]:
         from bson import ObjectId
+
         d = await self.col.find_one({"_id": ObjectId(id)})
         if not d:
             return None
@@ -92,7 +99,15 @@ class PermissionDAL:
 
     async def update(self, *, id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         from bson import ObjectId
+
         patch = {k: v for k, v in patch.items() if v is not None}
+
+        # Normalize app if provided
+        if "app" in patch:
+            app_val = patch.get("app")
+            if isinstance(app_val, str):
+                app_val = app_val.strip()
+                patch["app"] = app_val or None
 
         # if key changes, keep derived fields consistent
         if "key" in patch and isinstance(patch["key"], str):
@@ -113,5 +128,6 @@ class PermissionDAL:
 
     async def delete(self, *, id: str) -> bool:
         from bson import ObjectId
+
         r = await self.col.delete_one({"_id": ObjectId(id)})
         return r.deleted_count == 1
