@@ -14,15 +14,38 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _derive_resource_action(key: str) -> tuple[str, str]:
+    """
+    Backward-compatible derivation from existing "resource.action" keys.
+    Examples:
+      - "workspace.read" -> ("workspace", "read")
+      - "artifact.generate" -> ("artifact", "generate")
+    """
+    if "." not in key:
+        # fall back to "global"/"use"
+        return ("global", key)
+    resource_type, action = key.split(".", 1)
+    return (resource_type.strip() or "global", action.strip() or "use")
+
+
 class PermissionDAL:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.col = db[settings.COL_PERMISSIONS]
 
     async def ensure_indexes(self) -> None:
         await self.col.create_index([("key", ASCENDING)], unique=True)
+        await self.col.create_index([("resource_type", ASCENDING), ("action", ASCENDING)])
 
     async def create(self, *, key: str, description: Optional[str]) -> Dict[str, Any]:
-        doc = {"key": key, "description": description, "created_at": _now(), "updated_at": _now()}
+        resource_type, action = _derive_resource_action(key)
+        doc = {
+            "key": key,
+            "resource_type": resource_type,
+            "action": action,
+            "description": description,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
         try:
             res = await self.col.insert_one(doc)
         except DuplicateKeyError:
@@ -45,6 +68,20 @@ class PermissionDAL:
         d["_id"] = str(d["_id"])
         return d
 
+    async def get_many_by_keys(self, keys: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch fetch to avoid N calls for N permissions.
+        Returns map: key -> doc
+        """
+        if not keys:
+            return {}
+        cur = self.col.find({"key": {"$in": list(set(keys))}})
+        out: Dict[str, Dict[str, Any]] = {}
+        async for d in cur:
+            d["_id"] = str(d["_id"])
+            out[d["key"]] = d
+        return out
+
     async def list(self, *, limit: int = 200, skip: int = 0) -> List[Dict[str, Any]]:
         cur = self.col.find({}).sort("key", ASCENDING).skip(skip).limit(limit)
         out = []
@@ -56,6 +93,13 @@ class PermissionDAL:
     async def update(self, *, id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         from bson import ObjectId
         patch = {k: v for k, v in patch.items() if v is not None}
+
+        # if key changes, keep derived fields consistent
+        if "key" in patch and isinstance(patch["key"], str):
+            rt, act = _derive_resource_action(patch["key"])
+            patch.setdefault("resource_type", rt)
+            patch.setdefault("action", act)
+
         patch["updated_at"] = _now()
         r = await self.col.find_one_and_update(
             {"_id": ObjectId(id)},

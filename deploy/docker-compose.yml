@@ -6,14 +6,6 @@ services:
       - "5672:5672"
       - "15672:15672"
 
-  mongodb:
-    image: mongo:7
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-
   workspace-service:
     build:
       context: ..
@@ -23,7 +15,6 @@ services:
       - ../services/workspace-service/.env.example
     depends_on:
       - rabbitmq
-      - mongodb
     ports:
       - "8010:8010"
 
@@ -88,8 +79,6 @@ services:
       - ../services/sentinel-service/.env.example
     ports:
       - "8030:8030"
-    depends_on:
-      - mongodb
 
 volumes:
   postgres_data:

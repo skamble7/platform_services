@@ -3,8 +3,6 @@ from __future__ import annotations
 import time
 import uuid
 import logging
-import base64
-import json
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -19,9 +17,11 @@ from ..oidc import (
     fetch_userinfo,
     ensure_metadata_loaded,
 )
+from ..core.sentinel_client import resolve_authorization
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = logging.getLogger("passport.auth")
+
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -66,20 +66,18 @@ def _clear_session_cookie(resp: Response) -> None:
         path="/",
     )
 
+
 # ---------------------------------------------------------------------
-# Login / Callback (unchanged)
+# Login
 # ---------------------------------------------------------------------
 
 @router.get("/login")
 async def login(request: Request, return_to: str = "/") -> Response:
-    rid = getattr(request.state, "request_id", "-")
     oauth_client = request.app.state.oauth.passport_oidc
-
     await ensure_metadata_loaded(request)
 
     flow_id = str(uuid.uuid4())
     code_verifier = generate_code_verifier()
-    code_challenge = code_challenge_s256(code_verifier)
     nonce = generate_nonce()
 
     request.app.state.flow_store[flow_id] = {
@@ -89,23 +87,23 @@ async def login(request: Request, return_to: str = "/") -> Response:
         "created_at": time.time(),
     }
 
-    log.info("login redirect rid=%s flow_id=%s", rid, flow_id)
-
     return await oauth_client.authorize_redirect(
         request,
         redirect_uri=settings.callback_url,
         state=flow_id,
         nonce=nonce,
-        code_challenge=code_challenge,
+        code_challenge=code_challenge_s256(code_verifier),
         code_challenge_method="S256",
     )
 
 
+# ---------------------------------------------------------------------
+# Callback (IDENTITY + AUTHORIZATION)
+# ---------------------------------------------------------------------
+
 @router.get("/callback")
 async def callback(request: Request) -> Response:
-    rid = getattr(request.state, "request_id", "-")
     oauth_client = request.app.state.oauth.passport_oidc
-
     await ensure_metadata_loaded(request)
 
     state = request.query_params.get("state")
@@ -116,20 +114,31 @@ async def callback(request: Request) -> Response:
     if not flow:
         raise HTTPException(400, "Invalid or expired state")
 
-    code_verifier = flow["code_verifier"]
-    nonce = flow["nonce"]
-    return_to = flow.get("return_to") or "/"
-
     token = await oauth_client.authorize_access_token(
         request,
-        code_verifier=code_verifier,
+        code_verifier=flow["code_verifier"],
     )
 
-    id_claims = await oauth_client.parse_id_token(token, nonce)
+    id_claims = await oauth_client.parse_id_token(token, flow["nonce"])
     userinfo = await fetch_userinfo(request, token)
 
-    sid = str(uuid.uuid4())
+    issuer = id_claims.get("iss")
+    subject = id_claims.get("sub")
+
+    attributes = {
+        "email": userinfo.get("email") if userinfo else None,
+        "username": userinfo.get("preferred_username") if userinfo else None,
+    }
+
+    # 🔐 Authorization via Sentinel (Option-C)
+    authz = await resolve_authorization(
+        issuer=issuer,
+        subject=subject,
+        attributes=attributes,
+    )
+
     now = int(time.time())
+    sid = str(uuid.uuid4())
 
     session_data: Dict[str, Any] = {
         "created_at": now,
@@ -144,23 +153,24 @@ async def callback(request: Request) -> Response:
             "scope": token.get("scope"),
             "token_type": token.get("token_type"),
         },
-        # 🔮 Option-C ready
         "authorization": {
-            "roles": [],
-            "permissions": [],
-            "policy_version": None,
+            "roles": authz.get("roles", []),
+            "permissions": authz.get("permissions", []),
+            "policy_version": authz.get("policy_version"),
+            "resolved_at": now,
         },
     }
 
     store: InMemorySessionStore = request.app.state.session_store
     store.set(sid, session_data, ttl_seconds=settings.SESSION_TTL_SECONDS)
 
-    resp = RedirectResponse(return_to, status_code=302)
+    resp = RedirectResponse(flow.get("return_to") or "/", status_code=302)
     _set_session_cookie(resp, sid)
     return resp
 
+
 # ---------------------------------------------------------------------
-# NEW: Session endpoint (CORE CONTRACT)
+# Session (CORE CONTRACT)
 # ---------------------------------------------------------------------
 
 @router.get("/session")
@@ -195,6 +205,7 @@ async def session(request: Request) -> Response:
             "expires_at": session.get("expires_at"),
         }
     )
+
 
 # ---------------------------------------------------------------------
 # Logout

@@ -11,9 +11,13 @@ class PermissionDoc(BaseModel):
     Stored in MongoDB.
 
     key: stable identifier like "workspace.read" / "artifact.generate"
+    resource_type: what the permission applies to (workspace, artifact, run, ...)
+    action: verb-like action (read, write, generate, ...)
     """
     id: str = Field(alias="_id")
     key: str
+    resource_type: str
+    action: str
     description: Optional[str] = None
     created_at: datetime
     updated_at: datetime

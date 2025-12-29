@@ -94,6 +94,7 @@ async def startup():
         group_dal=app.state.group_dal,
         role_dal=app.state.role_dal,
         policy_dal=app.state.policy_dal,
+        permission_dal=app.state.permission_dal,
     )
 
     log.info("startup complete")

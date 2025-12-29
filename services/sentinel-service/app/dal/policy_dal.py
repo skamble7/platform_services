@@ -76,23 +76,34 @@ class PolicyDAL:
     async def find_applicable(
         self,
         *,
-        platform: str,
+        platform: Optional[str],
         workspace_id: Optional[str],
     ) -> List[Dict[str, Any]]:
         """
         Return enabled policies applicable for (platform, workspace_id).
-        Rules:
-          - platform must match
-          - workspace_id matches exact OR policy.workspace_id is null (global for platform)
+
+        If platform is None (login-time resolution), only apply "global" policies:
+          - target.platform == None
+
+        If platform is set:
+          - target.platform must match
+          - workspace_id matches exact OR target.workspace_id is null (global for platform)
         """
-        query = {
-            "enabled": True,
-            "target.platform": platform,
-            "$or": [
-                {"target.workspace_id": workspace_id},
-                {"target.workspace_id": None},
-            ],
-        }
+        if platform is None:
+            query = {
+                "enabled": True,
+                "target.platform": None,
+            }
+        else:
+            query = {
+                "enabled": True,
+                "target.platform": platform,
+                "$or": [
+                    {"target.workspace_id": workspace_id},
+                    {"target.workspace_id": None},
+                ],
+            }
+
         cur = self.col.find(query).sort([("priority", ASCENDING), ("name", ASCENDING)])
         out = []
         async for d in cur:
