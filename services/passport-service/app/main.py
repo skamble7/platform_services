@@ -1,3 +1,4 @@
+# services/passport-service/app/main.py
 from __future__ import annotations
 
 import logging
@@ -14,6 +15,7 @@ from .oidc import build_oauth
 from .routers.auth_routes import router as auth_router
 from .routers.health_routes import router as health_router
 from .session_store import InMemorySessionStore
+from .handoff_store import InMemoryHandoffStore  # ✅ ADD THIS
 
 # ----------------------------
 # Logging setup
@@ -94,6 +96,7 @@ async def startup():
 
     app.state.oauth = build_oauth()
     app.state.session_store = InMemorySessionStore()
+    app.state.handoff_store = InMemoryHandoffStore()  # ✅ ADD THIS
     app.state.flow_store = {}
 
     log.info("startup complete")
