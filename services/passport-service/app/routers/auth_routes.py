@@ -20,7 +20,7 @@ from ..oidc import (
     fetch_userinfo,
     ensure_metadata_loaded,
 )
-from ..core.sentinel_client import resolve_authorization
+from ..core.sentinel_client import resolve_authorization, upsert_user_mapping  # ✅ UPDATED import
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = logging.getLogger("passport.auth")
@@ -179,8 +179,146 @@ def _append_query_param(url: str, key: str, value: str) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
 
 
+def _finish_html(*, vscode_uri: str) -> str:
+    safe_uri_js = json.dumps(vscode_uri or "")
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Login complete</title>
+  <style>
+    body {{
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0b0b0b;
+      color: #e5e7eb;
+      margin: 0;
+      padding: 32px;
+    }}
+    .card {{
+      max-width: 560px;
+      margin: 10vh auto;
+      border: 1px solid #27272a;
+      border-radius: 12px;
+      padding: 24px;
+      background: #09090b;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }}
+    .title {{
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }}
+    .muted {{
+      color: #a1a1aa;
+      font-size: 14px;
+      line-height: 1.6;
+    }}
+    .row {{
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }}
+    a.btn, button.btn {{
+      display: inline-block;
+      padding: 10px 14px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 14px;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }}
+    a.primary {{
+      background: #2563eb;
+      color: white;
+    }}
+    button.secondary {{
+      background: #18181b;
+      border: 1px solid #27272a;
+      color: #e5e7eb;
+    }}
+    code {{
+      background: #111827;
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #e5e7eb;
+      word-break: break-all;
+    }}
+    .hint {{
+      margin-top: 12px;
+      font-size: 12px;
+      color: #a1a1aa;
+      opacity: 0.95;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="title">✅ Login complete</div>
+    <div class="muted">
+      Click <b>Return to VS Code</b>. If your browser asks for confirmation (“Open VS Code?”), approve it.
+      <div class="hint">
+        If the browser blocked the redirect, you may need to click the button again.
+      </div>
+    </div>
+
+    <div class="row">
+      <a class="btn primary" href="#" id="openLink">Return to VS Code</a>
+      <button class="btn secondary" id="copyBtn">Copy callback URL</button>
+    </div>
+
+    <div class="hint">
+      Target: <code id="targetCode"></code>
+    </div>
+  </div>
+
+  <script>
+    (function () {{
+      const target = {safe_uri_js};
+      const targetCode = document.getElementById("targetCode");
+      const openLink = document.getElementById("openLink");
+      const copyBtn = document.getElementById("copyBtn");
+
+      targetCode.textContent = target || "(none)";
+      openLink.href = target || "#";
+
+      function attemptOpen() {{
+        if (!target) return;
+        try {{
+          // Trigger the external protocol navigation.
+          // IMPORTANT: Do NOT auto-close this tab; browsers show a confirmation prompt.
+          window.location.href = target;
+        }} catch (e) {{}}
+      }}
+
+      // Auto-attempt once shortly after load (nice UX), but DO NOT close the tab.
+      setTimeout(attemptOpen, 150);
+
+      openLink.addEventListener("click", (e) => {{
+        e.preventDefault();
+        attemptOpen();
+      }});
+
+      copyBtn.addEventListener("click", async () => {{
+        try {{
+          await navigator.clipboard.writeText(target || "");
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => (copyBtn.textContent = "Copy callback URL"), 1200);
+        }} catch (e) {{
+          // clipboard may be blocked; ignore
+        }}
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
 # ---------------------------------------------------------------------
-# Passport Bridge Page (legacy iframe bridge; kept as-is)
+# Passport Complete Page (legacy iframe bridge; kept as-is)
 # ---------------------------------------------------------------------
 
 @router.get("/complete")
@@ -289,18 +427,11 @@ async def complete(origin: str = "*") -> Response:
 
 @router.get("/login")
 async def login(request: Request, return_to: str = "/", state: str = "") -> Response:
-    """
-    Fix:
-    - VS Code sometimes ends up sending `state` as a separate query param to /auth/login
-      (instead of embedding it in return_to).
-    - We re-attach it into return_to if missing, so /auth/vscode/finish receives it.
-    """
     oauth_client = request.app.state.oauth.passport_oidc
     await ensure_metadata_loaded(request)
 
     decoded_return_to = _safe_decode_once(return_to)
 
-    # If /auth/login received state separately, ensure return_to carries it forward.
     decoded_state = _safe_decode_once(state)
     if decoded_state:
         decoded_return_to = _append_query_param(decoded_return_to, "state", decoded_state)
@@ -363,15 +494,23 @@ async def callback(request: Request) -> Response:
     issuer = id_claims.get("iss")
     subject = id_claims.get("sub")
 
-    attributes = {
-        "email": userinfo.get("email") if userinfo else None,
-        "username": userinfo.get("preferred_username") if userinfo else None,
-    }
+    if not issuer or not subject:
+        raise HTTPException(400, "Missing issuer/sub in id_token")
+
+    await upsert_user_mapping(
+        issuer=issuer,
+        subject=subject,
+        preferred_username=(userinfo or {}).get("preferred_username") or id_claims.get("preferred_username"),
+        email=(userinfo or {}).get("email") or id_claims.get("email"),
+        name=(userinfo or {}).get("name") or id_claims.get("name"),
+    )
 
     authz = await resolve_authorization(
         issuer=issuer,
         subject=subject,
-        attributes=attributes,
+        platform=None,
+        workspace_id=None,
+        context=None,
     )
 
     now = int(time.time())
@@ -393,7 +532,7 @@ async def callback(request: Request) -> Response:
         "authorization": {
             "roles": authz.get("roles", []),
             "permissions": authz.get("permissions", []),
-            "policy_version": authz.get("policy_version"),
+            "policies_applied": authz.get("policies_applied", []),
             "resolved_at": now,
         },
     }
@@ -461,11 +600,16 @@ async def vscode_finish(request: Request, redirect_uri: str = "", state: str = "
     code = handoff.issue_code(sid=sid, ttl_seconds=60)
 
     sep = "&" if ("?" in redirect_uri) else "?"
-    dest = f"{redirect_uri}{sep}{urlencode({'code': code, 'state': state or ''})}"
+    vscode_uri = f"{redirect_uri}{sep}{urlencode({'code': code, 'state': state or ''})}"
 
-    log.info("[vscode_finish] redirecting_to=%s", dest)
+    log.info("[vscode_finish] finish_page_target=%s", vscode_uri)
 
-    return RedirectResponse(dest, status_code=302)
+    html = _finish_html(vscode_uri=vscode_uri)
+    resp = HTMLResponse(content=html)
+
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @router.get("/vscode/finish{rest:path}")
@@ -553,4 +697,30 @@ async def logout(request: Request) -> Response:
 
     resp = JSONResponse({"ok": True})
     _clear_session_cookie(resp)
+    return resp
+
+
+# ---------------------------------------------------------------------
+# Logout (browser-friendly, Fix 2)
+# ---------------------------------------------------------------------
+
+@router.get("/logout/browser")
+async def logout_browser(request: Request, return_to: str = "/") -> Response:
+    """
+    Browser-friendly logout used by VS Code:
+      - Deletes server session (if cookie present)
+      - Clears passport_session cookie
+      - Redirects to return_to (default "/")
+    """
+    sid = _get_session_id(request)
+    store: InMemorySessionStore = request.app.state.session_store
+    if sid:
+        store.delete(sid)
+
+    target = _safe_decode_once(return_to or "/")
+    resp = RedirectResponse(target, status_code=302)
+    _clear_session_cookie(resp)
+
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Pragma"] = "no-cache"
     return resp

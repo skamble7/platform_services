@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     ENV: str = "dev"
 
     # RabbitMQ (topic exchange)
-    RABBITMQ_URL: str = "amqp://guest:guest@rabbitmq:5672/"
+    RABBITMQ_URL: str = "amqp://raina:raina@rabbitmq:5672/"
     RABBITMQ_EXCHANGE: str = "raina.events"
     RABBITMQ_EXCHANGE_TYPE: str = "topic"
 

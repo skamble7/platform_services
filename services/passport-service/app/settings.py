@@ -31,7 +31,12 @@ class Settings(BaseSettings):
     # 🔐 Sentinel
     SENTINEL_BASE_URL: AnyUrl = Field(default="http://sentinel-service:8030")
     SENTINEL_RESOLVE_PATH: str = Field(default="/resolve")
+    SENTINEL_ADMIN_UPSERT_PATH: str = Field(default="/admin/users/upsert")
     SENTINEL_TIMEOUT_SECONDS: int = Field(default=5)
+
+    # Optional internal auth for Sentinel admin endpoints
+    SENTINEL_ADMIN_TOKEN_HEADER: str = Field(default="x-internal-token")
+    SENTINEL_ADMIN_TOKEN: Optional[str] = Field(default=None)
 
     LOG_LEVEL: str = Field(default="INFO")
 
@@ -42,6 +47,10 @@ class Settings(BaseSettings):
     @property
     def sentinel_resolve_url(self) -> str:
         return f"{str(self.SENTINEL_BASE_URL).rstrip('/')}{self.SENTINEL_RESOLVE_PATH}"
+
+    @property
+    def sentinel_admin_upsert_url(self) -> str:
+        return f"{str(self.SENTINEL_BASE_URL).rstrip('/')}{self.SENTINEL_ADMIN_UPSERT_PATH}"
 
 
 settings = Settings()
