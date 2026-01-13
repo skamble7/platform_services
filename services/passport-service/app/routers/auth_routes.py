@@ -317,6 +317,59 @@ def _finish_html(*, vscode_uri: str) -> str:
 """
 
 
+def _logged_out_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Logged out</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0b0b0b;
+      color: #e5e7eb;
+      margin: 0;
+      padding: 32px;
+    }
+    .card {
+      max-width: 560px;
+      margin: 10vh auto;
+      border: 1px solid #27272a;
+      border-radius: 12px;
+      padding: 24px;
+      background: #09090b;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .muted { color: #a1a1aa; font-size: 14px; line-height: 1.6; }
+    .hint { margin-top: 12px; font-size: 12px; color: #a1a1aa; opacity: 0.95; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="title">✅ You’re logged out</div>
+    <div class="muted">
+      You can close this tab and return to VS Code.
+    </div>
+    <div class="hint">
+      If you still appear signed in, switch back to VS Code and click “Refresh”.
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------
+# Passport Logged-out Page (NEW, optional UX improvement)
+# ---------------------------------------------------------------------
+
+@router.get("/logged-out")
+async def logged_out() -> Response:
+    return HTMLResponse(content=_logged_out_html())
+
+
 # ---------------------------------------------------------------------
 # Passport Complete Page (legacy iframe bridge; kept as-is)
 # ---------------------------------------------------------------------
