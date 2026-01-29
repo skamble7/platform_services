@@ -70,27 +70,11 @@ def _clear_session_cookie(resp: Response) -> None:
     )
 
 
-def _validate_bridge_origin(origin: str) -> str:
-    if not origin:
-        return "*"
-
-    o = origin.strip()
-    if o == "*":
-        return "*"
-
-    lo = o.lower()
-    if lo.startswith("vscode-webview://"):
-        return o
-
-    if lo.startswith("http://localhost") or lo.startswith("https://localhost"):
-        return o
-    if lo.startswith("http://127.0.0.1") or lo.startswith("https://127.0.0.1"):
-        return o
-
-    raise HTTPException(status_code=400, detail="Invalid origin for /auth/complete")
-
-
 def _validate_vscode_redirect_uri(redirect_uri: str) -> str:
+    """
+    Strictly validate the redirect URI passed in by the VS Code extension.
+    Only allow vscode / vscode-insiders schemes, and require a host (extension id).
+    """
     if not redirect_uri:
         raise HTTPException(status_code=400, detail="Missing redirect_uri")
 
@@ -135,6 +119,12 @@ def _session_contract_from_sid(request: Request, sid: str) -> Optional[Dict[str,
 
 
 def _extract_finish_params(request: Request, redirect_uri: str, state: str) -> tuple[str, str]:
+    """
+    Some browsers/clients can double-encode or place query params in the path.
+    Support both:
+      /auth/vscode/finish?redirect_uri=...&state=...
+      /auth/vscode/finish%3Fredirect_uri=...%26state=...
+    """
     if redirect_uri:
         return redirect_uri, state
 
@@ -362,116 +352,12 @@ def _logged_out_html() -> str:
 
 
 # ---------------------------------------------------------------------
-# Passport Logged-out Page (NEW, optional UX improvement)
+# Passport Logged-out Page (kept for VS Code logout UX)
 # ---------------------------------------------------------------------
 
 @router.get("/logged-out")
 async def logged_out() -> Response:
     return HTMLResponse(content=_logged_out_html())
-
-
-# ---------------------------------------------------------------------
-# Passport Complete Page (legacy iframe bridge; kept as-is)
-# ---------------------------------------------------------------------
-
-@router.get("/complete")
-async def complete(origin: str = "*") -> Response:
-    target_origin = _validate_bridge_origin(origin)
-    target_origin_js = json.dumps(target_origin)
-
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Passport Auth Bridge</title>
-</head>
-<body style="font-family: system-ui; background:#0b0b0b; color:#ddd; margin:0; padding:12px;">
-  <div style="font-size:12px; opacity:.8;">Passport authentication bridge…</div>
-
-  <script>
-  (function() {{
-    const targetOrigin = {target_origin_js} || "*";
-
-    async function safeJson(res) {{
-      const txt = await res.text();
-      try {{ return txt ? JSON.parse(txt) : null; }}
-      catch {{ return {{ raw: txt }}; }}
-    }}
-
-    async function emitSession() {{
-      try {{
-        const res = await fetch("/auth/session", {{
-          method: "GET",
-          credentials: "include",
-          headers: {{ "Accept": "application/json" }}
-        }});
-        const payload = await safeJson(res);
-        window.parent.postMessage({{
-          type: "passport:session",
-          ok: res.ok,
-          payload
-        }}, targetOrigin);
-      }} catch (e) {{
-        window.parent.postMessage({{
-          type: "passport:session",
-          ok: false,
-          error: (e && e.message) ? e.message : String(e)
-        }}, targetOrigin);
-      }}
-    }}
-
-    async function doLogout() {{
-      try {{
-        const res = await fetch("/auth/logout", {{
-          method: "POST",
-          credentials: "include",
-          headers: {{ "Content-Type": "application/json", "Accept": "application/json" }},
-          body: "{{}}"
-        }});
-        await emitSession();
-        window.parent.postMessage({{
-          type: "passport:logout:done",
-          ok: res.ok
-        }}, targetOrigin);
-      }} catch (e) {{
-        window.parent.postMessage({{
-          type: "passport:logout:done",
-          ok: false,
-          error: (e && e.message) ? e.message : String(e)
-        }}, targetOrigin);
-      }}
-    }}
-
-    window.addEventListener("message", (e) => {{
-      if (targetOrigin !== "*" && e.origin !== targetOrigin) return;
-
-      const msg = e.data || {{}};
-
-      if (msg.type === "passport:refresh") {{
-        emitSession();
-        return;
-      }}
-
-      if (msg.type === "passport:logout") {{
-        doLogout();
-        return;
-      }}
-
-      if (msg.type === "passport:login") {{
-        const returnTo = encodeURIComponent("/auth/complete?origin=" + encodeURIComponent(targetOrigin));
-        window.location.href = "/auth/login?return_to=" + returnTo;
-        return;
-      }}
-    }});
-
-    emitSession();
-  }})();
-  </script>
-</body>
-</html>
-"""
-    return HTMLResponse(content=html)
 
 
 # ---------------------------------------------------------------------
@@ -604,24 +490,7 @@ async def callback(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------
-# Session (cookie backed)
-# ---------------------------------------------------------------------
-
-@router.get("/session")
-async def session(request: Request) -> Response:
-    sid = _get_session_id(request)
-    if not sid:
-        return JSONResponse({"authenticated": False}, status_code=401)
-
-    contract = _session_contract_from_sid(request, sid)
-    if not contract:
-        return JSONResponse({"authenticated": False}, status_code=401)
-
-    return JSONResponse(contract)
-
-
-# ---------------------------------------------------------------------
-# VS Code Finish + Handoff (Option 2)
+# VS Code Finish + Handoff (Option 2 only)
 # ---------------------------------------------------------------------
 
 @router.get("/vscode/finish")
@@ -641,6 +510,8 @@ async def vscode_finish(request: Request, redirect_uri: str = "", state: str = "
 
     redirect_uri = _validate_vscode_redirect_uri(redirect_uri)
 
+    # IMPORTANT: Option 2 still relies on the browser cookie-backed session,
+    # because the user completed OIDC in the browser and Passport set the cookie in /auth/callback.
     sid = _get_session_id(request)
     if not sid:
         raise HTTPException(status_code=401, detail="No passport session cookie present")
@@ -693,6 +564,10 @@ async def vscode_finish_encoded_path(request: Request, rest: str) -> Response:
     return await vscode_finish(request, redirect_uri=redirect_uri, state=state)
 
 
+# ---------------------------------------------------------------------
+# Handoff endpoints (Option 2)
+# ---------------------------------------------------------------------
+
 @router.post("/handoff/exchange")
 async def handoff_exchange(request: Request) -> Response:
     body = await request.json()
@@ -738,23 +613,7 @@ async def handoff_logout(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------
-# Logout (cookie backed)
-# ---------------------------------------------------------------------
-
-@router.post("/logout")
-async def logout(request: Request) -> Response:
-    sid = _get_session_id(request)
-    store: InMemorySessionStore = request.app.state.session_store
-    if sid:
-        store.delete(sid)
-
-    resp = JSONResponse({"ok": True})
-    _clear_session_cookie(resp)
-    return resp
-
-
-# ---------------------------------------------------------------------
-# Logout (browser-friendly, Fix 2)
+# Logout (browser-friendly, Option 2)
 # ---------------------------------------------------------------------
 
 @router.get("/logout/browser")
