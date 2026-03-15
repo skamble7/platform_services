@@ -23,6 +23,8 @@ class Settings(BaseSettings):
         "*.learning.*.v1",
         "*.conductor.*.v1",
         "*.conductor.*.*.v1",
+        "*.planner.*.v1",
+        "*.planner.*.*.v1",
         "*.guidance.*.v1",
         "*.capability.*.v1",
         "*.notification.*.v1",
